@@ -81,6 +81,7 @@ async function startScan() {
     const worksheet = workbook.addWorksheet('Images');
 
     worksheet.columns = [
+        { header: 'Page Title', key: 'pageTitle', width: 30 },
         { header: 'Page URL', key: 'pageUrl', width: 30 },
         { header: 'Section Name', key: 'sectionName', width: 25 },
         { header: 'Section Screenshot', key: 'sectionShot', width: 25 }, // New Column
@@ -124,10 +125,12 @@ async function startScan() {
 
             // C. Metadata
             const pageUrl = window.location.href;
+            const pageTitle = document.title;
             const sectionName = getSectionTitle(section);
 
             // Add Row
             const row = worksheet.addRow({
+                pageTitle: pageTitle,
                 pageUrl: pageUrl,
                 sectionName: sectionName,
                 sectionShot: '',
