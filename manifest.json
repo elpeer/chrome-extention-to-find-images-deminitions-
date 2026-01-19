@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Image Scanner & Excel Export",
+  "version": "1.0",
+  "description": "Scans web pages for images, captures dimensions and screenshots, and exports to Excel.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["libs/exceljs.min.js", "libs/html2canvas.min.js", "content.js"]
+    }
+  ]
+}
