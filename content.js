@@ -10,110 +10,163 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 async function startScan() {
     reportStatus('Scanning for images...');
 
-    const images = [];
+    // Preliminary list of all valid images
+    const rawImages = [];
 
     // 1. Scan <img> tags
-    const imgTags = document.querySelectorAll('img');
-    imgTags.forEach(img => {
+    document.querySelectorAll('img').forEach(img => {
         if (isVisible(img)) {
-            images.push({
+            rawImages.push({
                 element: img,
                 type: 'img',
                 src: img.src,
-                width: img.naturalWidth || img.width,
-                height: img.naturalHeight || img.height,
-                displayWidth: img.width,
-                displayHeight: img.height
+                // Use display size for deduplication as requested ("same size in slider")
+                width: img.offsetWidth,
+                height: img.offsetHeight,
+                naturalWidth: img.naturalWidth || img.width,
+                naturalHeight: img.naturalHeight || img.height
             });
         }
     });
 
     // 2. Scan background images
-    const allElements = document.querySelectorAll('*');
-    allElements.forEach(el => {
+    document.querySelectorAll('*').forEach(el => {
         const style = window.getComputedStyle(el);
         if (style.backgroundImage && style.backgroundImage !== 'none' && style.backgroundImage.startsWith('url')) {
-            // Extract URL
             const urlMatch = style.backgroundImage.match(/url\(["']?([^"']*)["']?\)/);
             if (urlMatch && isVisible(el)) {
-                images.push({
+                rawImages.push({
                     element: el,
                     type: 'background',
                     src: urlMatch[1],
-                    width: el.offsetWidth, // Approximate for bg
+                    width: el.offsetWidth,
                     height: el.offsetHeight,
-                    displayWidth: el.offsetWidth,
-                    displayHeight: el.offsetHeight
+                    naturalWidth: el.offsetWidth, // Approximate
+                    naturalHeight: el.offsetHeight
                 });
             }
         }
     });
 
-    reportStatus(`Found ${images.length} images. Generating screenshots...`);
+    // 3. Deduplication & Grouping
+    // Key: SectionElement_Width_Height
+    const uniqueGroups = new Map();
+    const sectionCache = new Map(); // Cache map for section screenshots check
 
-    // 3. Process images: Screenshot & Prepare Data
-    const excelData = [];
+    reportStatus(`Found ${rawImages.length} raw images. Analyzing structure...`);
 
-    // Create Excel Workbook
+    for (const img of rawImages) {
+        const section = findParentSection(img.element);
+        // Using a unique ID for the section object to map it
+        if (!section.dataset.scanId) {
+            section.dataset.scanId = Math.random().toString(36).substr(2, 9);
+        }
+
+        const key = `${section.dataset.scanId}_${img.width}x${img.height}`;
+
+        if (!uniqueGroups.has(key)) {
+            uniqueGroups.set(key, {
+                imgItem: img,
+                section: section,
+                sectionId: section.dataset.scanId
+            });
+        }
+    }
+
+    const uniqueItems = Array.from(uniqueGroups.values());
+    reportStatus(`Filtered down to ${uniqueItems.length} unique size/section groups. Generating screenshots...`);
+
+    // 4. Excel Generation
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Images');
 
     worksheet.columns = [
+        { header: 'Page URL', key: 'pageUrl', width: 30 },
+        { header: 'Section Name', key: 'sectionName', width: 25 },
+        { header: 'Section Screenshot', key: 'sectionShot', width: 25 }, // New Column
         { header: 'Type', key: 'type', width: 10 },
         { header: 'Source URL', key: 'src', width: 40 },
-        { header: 'Dimensions (Natural)', key: 'dimensions', width: 20 },
-        { header: 'Display Size', key: 'displaySize', width: 20 },
-        { header: 'Screenshot', key: 'screenshot', width: 20 }
+        { header: 'Dimensions (Px)', key: 'dimensions', width: 15 },
+        { header: 'Image Screenshot', key: 'imgShot', width: 20 }
     ];
 
-    for (let i = 0; i < images.length; i++) {
-        const item = images[i];
-        reportStatus(`Processing image ${i + 1}/${images.length}...`);
+    // Cache section screenshots to avoid re-rendering
+    const screenshotsCache = {};
+
+    for (let i = 0; i < uniqueItems.length; i++) {
+        const { imgItem, section, sectionId } = uniqueItems[i];
+        reportStatus(`Processing unique item ${i + 1}/${uniqueItems.length}...`);
 
         try {
-            // Capture Screenshot of the element
-            // Use html2canvas
-            const canvas = await html2canvas(item.element, {
-                useCORS: true,
-                logging: false,
-                allowTaint: true // This might cause security errors for export if tainted
+            // A. Image Screenshot
+            const imgCanvas = await html2canvas(imgItem.element, {
+                useCORS: true, logging: false, allowTaint: false
             });
+            const imgBase64 = imgCanvas.toDataURL('image/png');
 
-            const base64Image = canvas.toDataURL('image/png');
+            // B. Section Screenshot (Cached)
+            let sectionBase64 = screenshotsCache[sectionId];
+            if (!sectionBase64) {
+                // Capture section - might be large, limit height if needed? 
+                // For now, capture full section as requested.
+                try {
+                    const sectionCanvas = await html2canvas(section, {
+                        useCORS: true, logging: false, allowTaint: false
+                    });
+                    sectionBase64 = sectionCanvas.toDataURL('image/png');
+                    screenshotsCache[sectionId] = sectionBase64;
+                } catch (secErr) {
+                    console.error('Error capturing section:', secErr);
+                    sectionBase64 = null;
+                }
+            }
 
-            // Add row
+            // C. Metadata
+            const pageUrl = window.location.href;
+            const sectionName = getSectionTitle(section);
+
+            // Add Row
             const row = worksheet.addRow({
-                type: item.type,
-                src: item.src,
-                dimensions: `${item.width}x${item.height}`,
-                displaySize: `${item.displayWidth}x${item.displayHeight}`,
-                screenshot: '' // Placeholder
+                pageUrl: pageUrl,
+                sectionName: sectionName,
+                sectionShot: '', // Placeholder
+                type: imgItem.type,
+                src: imgItem.src,
+                dimensions: `${imgItem.width}x${imgItem.height}`,
+                imgShot: '' // Placeholder
             });
 
-            // Add Image to Excel
-            // ExcelJS needs the base64 without prefix
-            const imageId = workbook.addImage({
-                base64: base64Image,
+            // Embed Section Screenshot
+            if (sectionBase64) {
+                const sectionImageId = workbook.addImage({
+                    base64: sectionBase64,
+                    extension: 'png',
+                });
+                worksheet.addImage(sectionImageId, {
+                    tl: { col: 2, row: row.number - 1 }, // Column C (0-indexed 2)
+                    ext: { width: 150, height: 100 }
+                });
+            }
+
+            // Embed Image Screenshot
+            const imgImageId = workbook.addImage({
+                base64: imgBase64,
                 extension: 'png',
             });
-
-            // Embed image in the "Screenshot" column (E)
-            worksheet.addImage(imageId, {
-                tl: { col: 4, row: row.number - 1 }, // 0-indexed col 4 = E
-                ext: { width: 100, height: 100 } // Thumbnail size
+            worksheet.addImage(imgImageId, {
+                tl: { col: 6, row: row.number - 1 }, // Column G (0-indexed 6)
+                ext: { width: 100, height: 100 }
             });
 
-            // Set row height to accommodate image
-            row.height = 80;
+            row.height = 90;
 
         } catch (e) {
-            console.error('Error capturing image:', e);
+            console.error('Error processing item:', e);
             worksheet.addRow({
-                type: item.type,
-                src: item.src,
-                dimensions: `${item.width}x${item.height}`,
-                displaySize: `${item.displayWidth}x${item.displayHeight}`,
-                screenshot: 'Error capturing'
+                pageUrl: window.location.href,
+                sectionName: 'Error',
+                src: imgItem.src,
+                dimensions: `${imgItem.width}x${imgItem.height}`
             });
         }
     }
@@ -127,12 +180,45 @@ async function startScan() {
 
     const a = document.createElement('a');
     a.href = url;
-    a.download = `images_scan_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `images_scan_v2_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
 
     reportStatus('Done! Scan finished.');
+}
+
+function findParentSection(el) {
+    // Traverse up to find a semantic section or distinctive container
+    let current = el.parentElement;
+    while (current && current.tagName !== 'BODY') {
+        const tag = current.tagName.toLowerCase();
+        // Semantic tags
+        if (['section', 'article', 'main', 'header', 'footer', 'nav', 'aside'].includes(tag)) {
+            return current;
+        }
+        // Class/ID heuristics
+        if (current.id && (current.id.includes('section') || current.id.includes('container') || current.id.includes('wrapper'))) {
+            return current;
+        }
+        if (current.className && typeof current.className === 'string' && (current.className.includes('section') || current.className.includes('container'))) {
+            return current;
+        }
+        current = current.parentElement;
+    }
+    return document.body; // Fallback
+}
+
+function getSectionTitle(section) {
+    // Find first header in the section
+    const headers = section.querySelectorAll('h1, h2, h3, h4, h5, h6');
+    if (headers && headers.length > 0) {
+        return headers[0].innerText.substring(0, 50).trim(); // Truncate
+    }
+    // Fallback: ID or Class
+    if (section.id) return '#' + section.id;
+    if (section.className && typeof section.className === 'string') return '.' + section.className.split(' ')[0];
+    return 'Unnamed Section';
 }
 
 function isVisible(elem) {
