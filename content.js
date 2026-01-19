@@ -99,21 +99,22 @@ async function startScan() {
 
         try {
             // A. Image Screenshot
+            // Capture full res first, then downscale
             const imgCanvas = await html2canvas(imgItem.element, {
                 useCORS: true, logging: false, allowTaint: false
             });
-            const imgBase64 = imgCanvas.toDataURL('image/png');
+            // Compress: Max 300px width, 60% JPEG quality
+            const imgBase64 = compressCanvas(imgCanvas, 300, 0.6);
 
             // B. Section Screenshot (Cached)
             let sectionBase64 = screenshotsCache[sectionId];
             if (!sectionBase64) {
-                // Capture section - might be large, limit height if needed? 
-                // For now, capture full section as requested.
                 try {
                     const sectionCanvas = await html2canvas(section, {
                         useCORS: true, logging: false, allowTaint: false
                     });
-                    sectionBase64 = sectionCanvas.toDataURL('image/png');
+                    // Compress: Max 600px width, 50% JPEG quality (context needs less detail)
+                    sectionBase64 = compressCanvas(sectionCanvas, 600, 0.5);
                     screenshotsCache[sectionId] = sectionBase64;
                 } catch (secErr) {
                     console.error('Error capturing section:', secErr);
@@ -129,21 +130,21 @@ async function startScan() {
             const row = worksheet.addRow({
                 pageUrl: pageUrl,
                 sectionName: sectionName,
-                sectionShot: '', // Placeholder
+                sectionShot: '',
                 type: imgItem.type,
                 src: imgItem.src,
                 dimensions: `${imgItem.width}x${imgItem.height}`,
-                imgShot: '' // Placeholder
+                imgShot: ''
             });
 
             // Embed Section Screenshot
             if (sectionBase64) {
                 const sectionImageId = workbook.addImage({
                     base64: sectionBase64,
-                    extension: 'png',
+                    extension: 'jpeg', // Changed to JPEG
                 });
                 worksheet.addImage(sectionImageId, {
-                    tl: { col: 2, row: row.number - 1 }, // Column C (0-indexed 2)
+                    tl: { col: 2, row: row.number - 1 },
                     ext: { width: 150, height: 100 }
                 });
             }
@@ -151,10 +152,10 @@ async function startScan() {
             // Embed Image Screenshot
             const imgImageId = workbook.addImage({
                 base64: imgBase64,
-                extension: 'png',
+                extension: 'jpeg', // Changed to JPEG
             });
             worksheet.addImage(imgImageId, {
-                tl: { col: 6, row: row.number - 1 }, // Column G (0-indexed 6)
+                tl: { col: 6, row: row.number - 1 },
                 ext: { width: 100, height: 100 }
             });
 
@@ -180,12 +181,37 @@ async function startScan() {
 
     const a = document.createElement('a');
     a.href = url;
-    a.download = `images_scan_v2_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `images_scan_v3_optimized_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
 
     reportStatus('Done! Scan finished.');
+}
+
+function compressCanvas(sourceCanvas, maxWidth, quality) {
+    let width = sourceCanvas.width;
+    let height = sourceCanvas.height;
+
+    if (width === 0 || height === 0) return sourceCanvas.toDataURL('image/jpeg', quality);
+
+    if (width > maxWidth) {
+        height = Math.round((height * maxWidth) / width);
+        width = maxWidth;
+    }
+
+    const destCanvas = document.createElement('canvas');
+    destCanvas.width = width;
+    destCanvas.height = height;
+    const ctx = destCanvas.getContext('2d');
+
+    // Draw white background mainly for transparent PNGs converted to JPEG
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.drawImage(sourceCanvas, 0, 0, width, height);
+
+    return destCanvas.toDataURL('image/jpeg', quality);
 }
 
 function findParentSection(el) {
